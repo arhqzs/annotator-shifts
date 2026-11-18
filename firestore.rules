@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Internal annotator board: every visitor is signed in anonymously by the app.
+    // Any signed-in visitor can read/write; the lead PIN gates management inside the app.
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

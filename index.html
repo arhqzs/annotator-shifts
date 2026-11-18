@@ -1,3 +1,10 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+</head>
+<body>
 <title>Annotator Shifts</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -234,6 +241,17 @@
 <div id="modalRoot"></div>
 <div class="toasts" id="toasts"></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script>window.FIREBASE_CONFIG = {
+  apiKey: "",
+  authDomain: "",
+  projectId: "",
+  storageBucket: "",
+  messagingSenderId: "",
+  appId: ""
+};</script>
 <script>
 (function(){
 "use strict";
@@ -434,11 +452,15 @@ function toArr(snap){ var a=[]; snap.docs.forEach(function(d){ var o=d.data()||{
 function allLoaded(){ return S.loaded.people&&S.loaded.shifts&&S.loaded.sessions&&S.loaded.tasks&&S.loaded.settings; }
 
 async function initDb(){
-  try{ S.user = await (window.claude&&window.claude.use?window.claude.use('user'):Promise.resolve(null)); }catch(e){ S.user=null; }
-  if(S.user){ try{ S.canWrite = await S.user.can('data.write'); }catch(e){ S.canWrite=null; } }
-  var db=null;
-  try{ db = await (window.claude&&window.claude.use?window.claude.use('db'):Promise.resolve(null)); }catch(e){ db=null; }
-  S.db=db;
+  var cfg=window.FIREBASE_CONFIG||{};
+  if(!cfg.projectId){ S.notConfigured=true; S.loadTimedOut=true; render(); return; }
+  try{
+    if(!firebase.apps.length) firebase.initializeApp(cfg);
+    try{ await firebase.auth().signInAnonymously(); S.user=firebase.auth().currentUser||null; }catch(e){ S.user=null; }
+    S.db=firebase.firestore();
+  }catch(e){ S.loadTimedOut=true; render(); return; }
+  S.canWrite=true;
+  var db=S.db;
   if(!db){ S.loadTimedOut=true; render(); return; }
   var cols=['people','shifts','sessions','tasks'];
   cols.forEach(function(c){
@@ -459,12 +481,14 @@ async function write(path, data, isUpdate){
   if(!S.db){ toast('Not connected yet — try again in a moment'); return false; }
   try{
     var ref=S.db.doc(path);
-    if(isUpdate) await ref.update(data); else await ref.set(data);
+    if(isUpdate){ try{ await ref.update(data); }catch(e){ if(e&&e.code==='not-found'){ await ref.set(data,{merge:true}); } else { throw e; } } }
+    else await ref.set(data);
     return true;
   }catch(err){
-    if(err&&err.code==='invalid_argument'){ S.writeBlocked=true; toast('You have view-only access here'); render(); }
-    else if(err&&err.code==='quota_exceeded'){ toast('Storage is full — remove old items'); }
-    else { toast('Could not save — check connection'); }
+    var code=err&&err.code||'';
+    if(code==='permission-denied'){ S.writeBlocked=true; toast('You don’t have write access'); render(); }
+    else if(code==='resource-exhausted'){ toast('Database busy — try again in a moment'); }
+    else { toast('Could not save — check your connection'); }
     return false;
   }
 }
@@ -601,7 +625,8 @@ function render(){
   var view=$('#view');
   if(S.modal) return; // don't rebuild behind an open sheet
 
-  if(!S.db && S.loadTimedOut){ view.innerHTML=bigNote('⚠️','Can’t reach the shared data','This page needs to run inside Claude to load the shared shift data. Open it from your artifacts and make sure you’re signed in.'); showTabs(false); return; }
+  if(S.notConfigured){ view.innerHTML=bigNote('🔌','Database not connected yet','This standalone site still needs its database connection. If you’re the owner, add the Firebase config and redeploy — then everyone can use this link.'); showTabs(false); return; }
+  if(!S.db && S.loadTimedOut){ view.innerHTML=bigNote('⚠️','Can’t reach the database','Couldn’t connect to the shared database. Check your connection and refresh.'); showTabs(false); return; }
   if(!allLoaded() && !S.loadTimedOut){ view.innerHTML=loadingHTML(); showTabs(false); return; }
 
   // empty board -> bootstrap the guided setup (no identity needed yet)
@@ -1260,3 +1285,6 @@ function icoSpark(){return '<svg viewBox="0 0 24 24" fill="none" stroke="current
 
 })();
 </script>
+
+</body>
+</html>
