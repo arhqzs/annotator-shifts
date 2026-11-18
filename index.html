@@ -277,7 +277,7 @@ var S = {
   theme:lsGet('as_theme'),
   view:null, now:new Date(),
   modal:null, boardFilterProblems:false, taskFilter:'all', schedPerson:null, histPerson:'', expand:{},
-  pendingAlerts:[], _alertKey:null, _ac:null
+  pendingAlerts:[], _alertKey:null, _ac:null, weekOffset:0, histMode:'hours', _csv:null
 };
 
 /* theme */
@@ -662,7 +662,7 @@ function showTabs(on){
   var cov=coverage();
   var probs=cov.absent+cov.late+cov.overdue+cov.gap;
   var tabs=[['myday','My Day',icoUser()],['now','Right Now',icoBoard(), S.lead?probs:0]];
-  if(S.lead){ tabs.push(['tasks','Tasks',icoCheck()]); tabs.push(['schedule','Schedule',icoCal()]); tabs.push(['people','People',icoTeam()]); tabs.push(['history','History',icoClock()]); }
+  if(S.lead){ tabs.push(['tasks','Tasks',icoCheck()]); tabs.push(['schedule','Schedule',icoCal()]); tabs.push(['people','People',icoTeam()]); tabs.push(['history','Hours',icoBars()]); }
   if(S.lead && (S.view==='setup' || (!setupComplete()&&!setupDismissed()))) tabs.unshift(['setup','Setup',icoSpark()]);
   t.innerHTML=tabs.map(function(x){ var badge=(x[3]&&x[3]>0)?'<span class="badge">'+x[3]+'</span>':'';
     return '<button class="tab '+(S.view===x[0]?'on':'')+'" data-tab="'+x[0]+'"><span class="tabic">'+x[2]+'</span><span style="position:relative">'+esc(x[1])+badge+'</span></button>'; }).join('');
@@ -1000,7 +1000,98 @@ function peopleHTML(){
 /* ---------- view: History ---------- */
 function historyHTML(){
   if(!canManage()) return lockHTML();
-  var ppl=activePeople();
+  var mode=(S.histMode==='log')?'log':'hours';
+  var seg='<div class="seg"><button class="'+(mode==='hours'?'on':'')+'" data-act="hist-mode" data-mode="hours">Weekly hours</button><button class="'+(mode==='log'?'on':'')+'" data-act="hist-mode" data-mode="log">Session log</button></div>';
+  return '<div class="stack"><div class="between"><h2 style="font-size:20px">'+(mode==='hours'?'Hours':'Attendance')+'</h2>'+seg+'</div>'+
+    (mode==='hours'?hoursSummaryHTML():sessionLogHTML())+'</div>';
+}
+
+/* ---------- weekly hours (timesheet) ---------- */
+function pad2(n){ return (n<10?'0':'')+n; }
+function weekStartsOn(){ return (S.settings&&S.settings.weekStartsOn!=null)?S.settings.weekStartsOn:1; }
+function weekDays(){
+  var vz=viewerTz(); var DAYMS=86400000; var ws=weekStartsOn();
+  var zp=tzParts(S.now,vz); var fromStart=((zp.dow-ws)+7)%7;
+  var firstMs=S.now.getTime() - fromStart*DAYMS + (S.weekOffset||0)*7*DAYMS;
+  var out=[];
+  for(var i=0;i<7;i++){
+    var ms=firstMs + i*DAYMS; var p=tzParts(new Date(ms),vz);
+    ms = ms + (720 - p.minOfDay)*60000; p=tzParts(new Date(ms),vz); // pin to ~local noon (DST-safe)
+    var dt=new Date(ms);
+    out.push({ y:p.y, mo:p.mo, d:p.d, dow:p.dow, ms:ms,
+      iso:p.y+'-'+pad2(p.mo)+'-'+pad2(p.d),
+      short:new Intl.DateTimeFormat('en-US',{timeZone:vz,weekday:'short'}).format(dt),
+      label:new Intl.DateTimeFormat('en-US',{timeZone:vz,weekday:'short',month:'short',day:'numeric'}).format(dt) });
+  }
+  return out;
+}
+function weekRangeLabel(days){
+  var vz=viewerTz();
+  var f=new Intl.DateTimeFormat('en-US',{timeZone:vz,month:'short',day:'numeric'}).format(new Date(days[0].ms));
+  var l=new Intl.DateTimeFormat('en-US',{timeZone:vz,month:'short',day:'numeric',year:'numeric'}).format(new Date(days[6].ms));
+  return f+' – '+l;
+}
+function hoursForWeek(){
+  var vz=viewerTz(); var days=weekDays(); var idx={}; days.forEach(function(d,i){ idx[d.iso]=i; });
+  var per={}; S.people.forEach(function(p){ per[p.id]={total:0,days:[0,0,0,0,0,0,0],sessions:0,open:0}; });
+  S.sessions.forEach(function(s){ var h=per[s.personId]; if(!h) return;
+    var z=tzParts(new Date(s.checkInAt),vz); var k=z.y+'-'+pad2(z.mo)+'-'+pad2(z.d);
+    if(!(k in idx)) return; var i=idx[k]; var w=workedMs(s);
+    h.total+=w; h.days[i]+=w; h.sessions++; if(!s.checkOutAt) h.open++;
+  });
+  return {days:days, per:per};
+}
+function hrs(ms){ return (ms/3600000).toFixed(1); }
+function hoursPeopleSorted(per){ return S.people.slice().filter(function(p){ var h=per[p.id]; return h && (h.sessions>0 || p.active!==false); }).sort(function(a,b){ return (per[b.id].total-per[a.id].total) || a.name.localeCompare(b.name); }); }
+function hoursSummaryHTML(){
+  var data=hoursForWeek(); var days=data.days, per=data.per;
+  var ppl=hoursPeopleSorted(per);
+  var grand=0, anyOpen=0; ppl.forEach(function(p){ grand+=per[p.id].total; anyOpen+=per[p.id].open; });
+  var isThis=(S.weekOffset||0)===0;
+  var nav='<div class="between" style="margin-top:2px"><button class="btn ghost sm" data-act="week-prev">‹ Prev</button>'+
+    '<div style="text-align:center"><div style="font-weight:700">'+esc(weekRangeLabel(days))+'</div>'+
+      (isThis?'<div class="muted" style="font-size:12px">This week</div>':'<button class="btn ghost sm" data-act="week-this" style="padding:2px 8px">Jump to this week</button>')+'</div>'+
+    '<button class="btn ghost sm" data-act="week-next" '+(isThis?'disabled':'')+'>Next ›</button></div>';
+  var totCard='<div class="card pad between"><div><div class="eyebrow">Team total this week</div><div style="font-family:var(--display);font-weight:700;font-size:26px">'+hrs(grand)+' <span style="font-size:15px;font-weight:600;color:var(--ink-3)">hours</span></div></div>'+
+    '<button class="btn sm" data-act="export-hours">⭳ Export CSV</button></div>';
+  var rows=ppl.map(function(p){ var h=per[p.id]; var ex=!!S.expand['hrs_'+p.id];
+    var dk=ex?'<div style="flex-basis:100%"><div class="daygrid" style="margin-top:8px">'+days.map(function(d,i){ return '<div class="dayrow" style="grid-template-columns:150px 1fr"><span class="dn">'+esc(d.label)+'</span><span>'+(h.days[i]?esc(msLabel(h.days[i])):'<span class="muted">—</span>')+'</span></div>'; }).join('')+'</div></div>':'';
+    return '<div class="lrow" style="flex-wrap:wrap;cursor:pointer" data-act="hours-expand" data-id="'+esc(p.id)+'">'+
+      avatarHTML(p)+'<div class="pmeta"><div style="font-weight:600">'+esc(p.name)+(p.active===false?' <span class="tag">removed</span>':'')+'</div>'+
+        '<div class="psub">'+h.sessions+' shift'+(h.sessions!==1?'s':'')+(h.open?' · <span style="color:var(--info-ink)">'+h.open+' open</span>':'')+' <span class="muted">'+(ex?'▴':'▾')+'</span></div></div>'+
+      '<div style="text-align:right;font-family:var(--display);font-weight:700;font-size:18px">'+hrs(h.total)+'<span style="font-size:12px;font-weight:600;color:var(--ink-3)"> h</span></div>'+dk+'</div>';
+  }).join('');
+  if(!rows) rows='<div class="empty"><div class="ic">🕒</div><div class="muted">No hours logged this week.</div></div>';
+  return '<div class="stack">'+nav+totCard+'<div class="listcard">'+rows+'</div>'+
+    '<div class="muted" style="font-size:12px">Net worked time, breaks excluded'+(anyOpen?' · open shifts counted up to now':'')+' · decimal hours (8.5 = 8 h 30 m) · your zone ('+esc(tzAbbr(viewerTz()))+'). Tap a person for the daily breakdown.</div></div>';
+}
+function csvCell(v){ v=String(v==null?'':v); if(/[",\n\r]/.test(v)) v='"'+v.replace(/"/g,'""')+'"'; return v; }
+function exportHoursCSV(){
+  var data=hoursForWeek(); var days=data.days, per=data.per; var ppl=hoursPeopleSorted(per);
+  var head=['Name'].concat(days.map(function(d){return d.short+' '+d.mo+'/'+d.d;})).concat(['Total (h)','Shifts']);
+  var lines=[head.map(csvCell).join(',')];
+  ppl.forEach(function(p){ var h=per[p.id];
+    lines.push([csvCell(p.name)].concat(h.days.map(function(ms){return (ms/3600000).toFixed(2);})).concat([(h.total/3600000).toFixed(2), String(h.sessions)]).join(','));
+  });
+  S._csv={text:lines.join('\r\n'), name:'hours_'+days[0].iso+'_to_'+days[6].iso+'.csv'};
+  openCsvSheet();
+}
+function openCsvSheet(){
+  var c=S._csv||{text:'',name:'hours.csv'};
+  openModal('<div class="sheethead"><div><h2>Export hours</h2><div class="muted" style="font-size:13px">'+esc(c.name)+'</div></div><button class="xbtn" data-act="close">✕</button></div>'+
+    '<div class="stack"><textarea readonly style="min-height:150px;font-family:var(--mono);font-size:12px;white-space:pre">'+esc(c.text)+'</textarea>'+
+    '<div class="row" style="gap:8px;justify-content:flex-end"><button class="btn" data-act="csv-copy">Copy</button><button class="btn primary" data-act="csv-download">⭳ Download .csv</button></div>'+
+    '<div class="muted" style="font-size:12px">Opens in Excel or Google Sheets. Decimal hours (8.5 = 8 h 30 m).</div></div>');
+}
+function downloadText(name, text, mime){
+  try{ var blob=new Blob([text],{type:mime||'text/plain;charset=utf-8'}); var url=URL.createObjectURL(blob);
+    var a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click();
+    setTimeout(function(){ try{URL.revokeObjectURL(url);}catch(e){} if(a.parentNode)a.parentNode.removeChild(a); },800); return true;
+  }catch(e){ return false; }
+}
+function copyText(t){ try{ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(t); toast('Copied to clipboard'); return; } }catch(e){} toast('Select the text and copy manually'); }
+
+function sessionLogHTML(){
   var opts='<option value="">Everyone</option>'+S.people.map(function(p){return '<option value="'+esc(p.id)+'" '+(S.histPerson===p.id?'selected':'')+'>'+esc(p.name)+'</option>';}).join('');
   var sess=S.sessions.slice().filter(function(s){return S.histPerson?s.personId===S.histPerson:true;})
     .sort(function(a,b){return (b.checkInAt||'').localeCompare(a.checkInAt||'');}).slice(0,80);
@@ -1014,7 +1105,7 @@ function historyHTML(){
       (open?' <button class="btn danger sm" data-act="fix-clock" data-sid="'+esc(s.id)+'">Fix</button>':'')+'</td></tr>';
   }).join('');
   if(!body) body='<tr><td colspan="6" style="text-align:center;color:var(--ink-3);padding:24px">No sessions yet.</td></tr>';
-  return '<div class="stack"><div class="between"><h2 style="font-size:20px">Attendance</h2>'+
+  return '<div class="stack" style="margin-top:4px"><div class="between"><div class="sectitle" style="margin:0">Recent sessions</div>'+
     '<select style="width:auto" data-act="hist-person">'+opts+'</select></div>'+
     '<div class="logwrap"><table class="log"><thead><tr><th>Person</th><th>Date</th><th>In</th><th>Out</th><th>Duration</th><th></th></tr></thead><tbody>'+body+'</tbody></table></div>'+
     '<div class="muted" style="font-size:12px">Showing the most recent '+sess.length+' sessions · times in your zone ('+esc(tzAbbr(vz))+').</div></div>';
@@ -1185,6 +1276,14 @@ document.addEventListener('click', function(e){
     case 'save-quick-shift': saveQuickShift(pid); break;
     case 'reopen-setup': S.view='setup'; closeModal(); break;
     case 'finish-setup': case 'skip-setup': lsSet('as_setup_dismissed','1'); S.view='now'; render(); break;
+    case 'hist-mode': S.histMode=el.getAttribute('data-mode'); render(); break;
+    case 'week-prev': S.weekOffset=(S.weekOffset||0)-1; render(); break;
+    case 'week-next': S.weekOffset=Math.min(0,(S.weekOffset||0)+1); render(); break;
+    case 'week-this': S.weekOffset=0; render(); break;
+    case 'hours-expand': S.expand['hrs_'+id]=!S.expand['hrs_'+id]; render(); break;
+    case 'export-hours': exportHoursCSV(); break;
+    case 'csv-copy': copyText(S._csv?S._csv.text:''); break;
+    case 'csv-download': { var cc=S._csv||{}; if(!downloadText(cc.name||'hours.csv', cc.text||'', 'text/csv;charset=utf-8')) toast('Download blocked — use Copy instead'); break; }
   }
 });
 document.addEventListener('change', function(e){
@@ -1281,6 +1380,7 @@ function icoCheck(){return '<svg viewBox="0 0 24 24" fill="none" stroke="current
 function icoCal(){return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/></svg>';}
 function icoTeam(){return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3 3-5 6-5s6 2 6 5"/><path d="M16 5a3 3 0 0 1 0 6M18 20c0-2-1-3.5-2.5-4.5"/></svg>';}
 function icoClock(){return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';}
+function icoBars(){return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 20h18M7 20v-6M12 20V8M17 20v-9"/></svg>';}
 function icoSpark(){return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 3h6v3H9z"/><path d="M8.5 12l2 2 4-4"/></svg>';}
 
 })();
