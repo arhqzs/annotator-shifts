@@ -502,13 +502,13 @@ async function clockIn(pid){
   if(pid===S.meId) ensureNotify();
   var id=uid(); var sess=stamp({ personId:pid, checkInAt:nowISO(), checkOutAt:null, openedBy:(S.lead&&pid!==S.meId)?'lead':'self', closedBy:null, shiftId:null, note:null });
   var ok=await write('sessions/'+id, sess);
-  if(ok){ var p=personById(pid); toast('Clocked in · '+fmtClock(new Date(sess.checkInAt),p?p.timezone:viewerTz()), {undo:function(){ del('sessions/'+id); }}); }
+  if(ok){ var p=personById(pid); var who=(S.lead&&pid!==S.meId&&p)?(' '+p.name.split(' ')[0]):''; toast('Clocked in'+who+' · '+fmtClock(new Date(sess.checkInAt),p?p.timezone:viewerTz()), {undoLabel:'Undo clock-in', undo:function(){ del('sessions/'+id); }}); }
 }
 async function clockOut(pid){
   var sess=openSessionFor(pid); if(!sess){ toast('Not clocked in'); return; }
   var prev={checkOutAt:sess.checkOutAt,closedBy:sess.closedBy};
   var ok=await write('sessions/'+sess.id, stamp({checkOutAt:nowISO(), closedBy:(S.lead&&pid!==S.meId)?'lead':'self'}), true);
-  if(ok){ toast('Clocked out · '+elapsedLabel(sess.checkInAt)+' this session', {undo:function(){ write('sessions/'+sess.id, {checkOutAt:prev.checkOutAt,closedBy:prev.closedBy}, true); }}); }
+  if(ok){ var pO=personById(pid); var whoO=(S.lead&&pid!==S.meId&&pO)?(' '+pO.name.split(' ')[0]):''; toast('Clocked out'+whoO+' · '+elapsedLabel(sess.checkInAt)+' this session', {undoLabel:'Undo clock-out', undo:function(){ write('sessions/'+sess.id, {checkOutAt:prev.checkOutAt,closedBy:prev.closedBy}, true); }}); }
 }
 async function fixClockout(sess){
   // close an overdue/open session now, lead
@@ -525,8 +525,10 @@ async function setTaskStatus(task, status, extra){
   if(status==='blocked'&&!(extra&&extra.blockedReason)){ patch.blockedReason=task.blockedReason||null; }
   var prev=stamp({status:task.status, startedAt:task.startedAt||null, completedAt:task.completedAt||null, blockedReason:task.blockedReason||null});
   var ok=await write('tasks/'+task.id, patch, true);
-  if(ok) toast(status==='done'?'Marked done':status==='in_progress'?'Started':status==='blocked'?'Marked blocked':'Updated',
-    {undo:function(){ write('tasks/'+task.id, prev, true); }});
+  var _verb=status==='done'?'Marked done':status==='in_progress'?'Started':status==='blocked'?'Marked blocked':status==='todo'?'Reopened':'Updated';
+  var _ul={done:'Undo done','in_progress':'Undo start',blocked:'Undo block',todo:'Undo reopen'}[status]||'Undo';
+  var _tt=task.title&&task.title.length>44?task.title.slice(0,42)+'…':(task.title||'task');
+  if(ok) toast(_verb+' · '+_tt, {undoLabel:_ul, undo:function(){ write('tasks/'+task.id, prev, true); }});
 }
 async function assignTask(task, pid){
   var patch=stamp({assigneeId:pid, status:(task.status==='done'?'todo':task.status)});
@@ -540,7 +542,7 @@ async function startBreak(pid){
   if(openBreak(sess)){ toast('Already on a break'); return; }
   var breaks=(sess.breaks||[]).slice(); breaks.push({start:nowISO(), end:null});
   var ok=await write('sessions/'+sess.id, stamp({breaks:breaks}), true);
-  if(ok) toast('On a break — your task is held', {undo:function(){ breaks.pop(); write('sessions/'+sess.id, stamp({breaks:breaks}), true); }});
+  if(ok) toast('On a break — your task is held', {undoLabel:'Undo break', undo:function(){ breaks.pop(); write('sessions/'+sess.id, stamp({breaks:breaks}), true); }});
 }
 async function endBreak(pid){
   var sess=openSessionFor(pid); if(!sess){ toast('Clock in first'); return; }
@@ -588,7 +590,7 @@ function toast(msg, opts){
   var span=document.createElement('span'); span.textContent=msg; el.appendChild(span);
   var t=setTimeout(function(){ remove(); }, opts.undo?6500:3200);
   function remove(){ clearTimeout(t); if(el.parentNode) el.parentNode.removeChild(el); }
-  if(opts.undo){ var b=document.createElement('button'); b.className='undo'; b.textContent='Undo';
+  if(opts.undo){ var b=document.createElement('button'); b.className='undo'; b.textContent=opts.undoLabel||'Undo';
     b.onclick=function(){ remove(); try{opts.undo();}catch(e){} }; el.appendChild(b); }
   root.appendChild(el);
   while(root.children.length>3) root.removeChild(root.firstChild);
